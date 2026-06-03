@@ -635,10 +635,10 @@ async def get_entity_history(entity_id: str, hours: int) -> List[Dict[str, Any]]
     Returns:
         A list of state change objects, or an error dictionary.
     """
-    client = await get_client()
-    
     if not policy.is_allowed(entity_id):
         return policy.denied(entity_id)
+
+    client = await get_client()
 
     # Calculate the end time for the history lookup
     end_time = datetime.now(timezone.utc)

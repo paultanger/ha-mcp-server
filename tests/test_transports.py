@@ -43,13 +43,12 @@ def mock_get_client():
 SERVER_ENV = {
     "HA_URL": "http://localhost:8123",
     "HA_TOKEN": "transport-test-token",
+    "HASS_MCP_ALLOWLIST": "*",
 }
 
 
 EXPECTED_TOOLS = {
-    "call_service_tool",
     "domain_summary_tool",
-    "entity_action",
     "get_entities_by_area",
     "get_entity",
     "get_error_log",
@@ -60,20 +59,11 @@ EXPECTED_TOOLS = {
     "get_version",
     "list_automations",
     "list_entities",
-    "restart_ha",
     "search_entities_tool",
     "system_overview",
 }
 
-EXPECTED_PROMPTS = {
-    "automation_health_check",
-    "create_automation",
-    "dashboard_layout_generator",
-    "debug_automation",
-    "entity_naming_consistency",
-    "routine_optimizer",
-    "troubleshoot_entity",
-}
+EXPECTED_PROMPTS = set()
 
 
 def _free_port():
@@ -106,11 +96,6 @@ async def _drive_session(session: ClientSession) -> None:
 
     prompts = await session.list_prompts()
     assert {p.name for p in prompts.prompts} == EXPECTED_PROMPTS
-
-    # Prompt invocation roundtrip — regression for the role-validation bug class
-    result = await session.get_prompt("create_automation", {"trigger_type": "state"})
-    for msg in result.messages:
-        assert msg.role in ("user", "assistant")
 
     # Tool invocation roundtrip — HA call will fail (no real HA), but the
     # protocol path is what we're verifying.

@@ -192,7 +192,7 @@ async def get_entity_resource(entity_id: str) -> str:
     logger.info(f"Getting entity resource: {entity_id}")
     
     # Get the entity state with caching (using lean format for token efficiency)
-    state = await get_entity_state(entity_id, use_cache=True, lean=True)
+    state = await get_entity_state(entity_id, lean=True)
     
     # Check if there was an error
     if "error" in state:
@@ -773,7 +773,7 @@ async def get_entity_resource_detailed(entity_id: str) -> str:
     logger.info(f"Getting detailed entity resource: {entity_id}")
     
     # Get all fields, no filtering (detailed view explicitly requests all data)
-    state = await get_entity_state(entity_id, use_cache=True, lean=False)
+    state = await get_entity_state(entity_id, lean=False)
     
     # Check if there was an error
     if "error" in state:
@@ -997,8 +997,21 @@ async def call_service_tool(domain: str, service: str, data: Optional[Dict[str, 
         domain='fan', service='set_percentage', data={'entity_id': 'fan.x', 'percentage': 50}
 
     """
-    logger.info(f"Calling Home Assistant service: {domain}.{service} with data: {data}")
-    affected_entities = await call_service(domain, service, data or {})
+    payload = data or {}
+    entity_ids = payload.get("entity_id")
+    if isinstance(entity_ids, str):
+        entity_ids = [entity_ids]
+    elif entity_ids is None:
+        entity_ids = []
+
+    # Hermes fork: when generic service calls are re-enabled, entity-scoped
+    # calls still cannot act outside the MCP allowlist.
+    for entity_id in entity_ids:
+        if not policy.is_allowed(entity_id):
+            return {**policy.denied(entity_id), "success": False}
+
+    logger.info(f"Calling Home Assistant service: {domain}.{service} with data: {payload}")
+    affected_entities = await call_service(domain, service, payload)
     return {
         "success": True,
         "domain": domain,

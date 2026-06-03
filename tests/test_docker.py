@@ -123,6 +123,7 @@ async def test_docker_stdio_transport(docker_image):
             "run", "-i", "--rm",
             "-e", "HA_URL=http://localhost:8123",
             "-e", "HA_TOKEN=docker-stdio-test",
+            "-e", "HASS_MCP_ALLOWLIST=*",
             docker_image,
         ],
     )
@@ -133,7 +134,7 @@ async def test_docker_stdio_transport(docker_image):
             tools = await session.list_tools()
             assert {t.name for t in tools.tools} == EXPECTED_TOOLS
             prompts = await session.list_prompts()
-            assert len(prompts.prompts) == 7
+            assert len(prompts.prompts) == 0
 
 
 async def test_docker_streamable_http_transport(docker_image):
@@ -146,6 +147,7 @@ async def test_docker_streamable_http_transport(docker_image):
             "-p", f"{port}:{port}",
             "-e", "HA_URL=http://localhost:8123",
             "-e", "HA_TOKEN=docker-http-test",
+            "-e", "HASS_MCP_ALLOWLIST=*",
             docker_image,
             "--http", "--host", "0.0.0.0", "--port", str(port),
         ],

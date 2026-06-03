@@ -14,6 +14,7 @@ boundary across fixture setup and test body.
 """
 
 from typing import Any, Dict
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import respx
@@ -61,9 +62,7 @@ async def test_initialize_handshake():
 
 
 EXPECTED_TOOLS = {
-    "call_service_tool",
     "domain_summary_tool",
-    "entity_action",
     "get_entities_by_area",
     "get_entity",
     "get_error_log",
@@ -74,7 +73,6 @@ EXPECTED_TOOLS = {
     "get_version",
     "list_automations",
     "list_entities",
-    "restart_ha",
     "search_entities_tool",
     "system_overview",
 }
@@ -90,15 +88,7 @@ async def test_list_tools_returns_expected_set():
         assert got == EXPECTED_TOOLS, f"Tool surface drift: {got ^ EXPECTED_TOOLS}"
 
 
-EXPECTED_PROMPTS = {
-    "automation_health_check",
-    "create_automation",
-    "dashboard_layout_generator",
-    "debug_automation",
-    "entity_naming_consistency",
-    "routine_optimizer",
-    "troubleshoot_entity",
-}
+EXPECTED_PROMPTS = set()
 
 
 async def test_list_prompts_returns_expected_set():
@@ -141,32 +131,16 @@ async def test_all_prompts_use_valid_roles():
         assert not bad, "Invalid prompt roles: " + "; ".join(bad)
 
 
-@respx.mock
 async def test_call_service_tool_returns_dict_for_empty_list():
-    """call_service_tool must yield a dict even when HA returns [] (e.g. automation.reload).
+    """The disabled-by-default control function still returns a dict when called directly."""
+    import app.server as server
 
-    The tool is annotated `Dict[str, Any]` and MCP SDKs that enforce return-type
-    validation reject list payloads. The serialized result must parse to a dict.
-    """
-    import json
+    with patch("app.server.call_service", AsyncMock(return_value=[])):
+        payload = await server.call_service_tool("automation", "reload")
 
-    respx.post("http://localhost:8123/api/services/automation/reload").mock(
-        return_value=httpx.Response(200, json=[])
-    )
-    async with create_connected_server_and_client_session(
-        mcp._mcp_server, raise_exceptions=True
-    ) as client:
-        result = await client.call_tool(
-            "call_service_tool",
-            arguments={"domain": "automation", "service": "reload"},
-        )
-        assert not result.isError, f"call_service_tool errored: {result.content}"
-        payload = json.loads(result.content[0].text)
-        assert isinstance(payload, dict), (
-            f"call_service_tool returned {type(payload).__name__}, expected dict. "
-            f"This breaks MCP output validation on SDKs that enforce the return "
-            f"type annotation. Got: {payload!r}"
-        )
+    assert isinstance(payload, dict)
+    assert payload["success"] is True
+    assert payload["affected_entities"] == []
 
 
 # --- Roundtrip with respx (expected to pass on master) ----------------------
