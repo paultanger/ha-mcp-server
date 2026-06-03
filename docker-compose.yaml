@@ -1,0 +1,19 @@
+# docker-compose.yml — in your patched hass-mcp fork dir
+services:
+  ha-mcp:
+    build: .                      # builds YOUR fork, not voska/hass-mcp:latest
+    container_name: ha-mcp
+    restart: unless-stopped
+    # --http + 0.0.0.0 so the published port is reachable through the bridge
+    command: ["--http", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:8000:8000"     # localhost-only: reachable by host-networked Hermes, NOT the LAN
+    env_file:
+      - .env                      # keep HA_TOKEN here, gitignored
+    environment:
+      - HA_URL=http://10.0.0.77:30525
+      - HASS_MCP_ALLOWLIST=sensor.gpu_*,sensor.*_temperature,binary_sensor.*_offline
+      # read-only defaults are implicit; listed here for clarity:
+      - HASS_MCP_ENABLE_CONTROL=false
+      - HASS_MCP_ENABLE_PROMPTS=false
+      - TZ=America/Denver
