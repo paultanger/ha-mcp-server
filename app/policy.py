@@ -105,7 +105,7 @@ def denied(entity_id: str) -> dict:
         "entity_id": entity_id,
         "error": (
             f"Entity '{entity_id}' is not in the MCP allowlist "
-            f"(HASS_MCP_ALLOWLIST). Access denied."
+            f"(HASS_MCP_ALLOWLIST / HASS_MCP_ALLOWLIST_FILE). Access denied."
         ),
     }
 
