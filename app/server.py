@@ -991,17 +991,33 @@ async def call_service_tool(domain: str, service: str, data: Optional[Dict[str, 
 
     """
     payload = data or {}
+
+    # Hermes fork: when generic service calls are re-enabled, entity-scoped
+    # calls still cannot act outside the MCP allowlist. Prevent bypass via
+    # HA's alternate targeting fields.
+    for targeting_key in ("area_id", "device_id", "label_id"):
+        if targeting_key in payload:
+            return {
+                "success": False,
+                "domain": domain,
+                "service": service,
+                "error": (
+                    f"{targeting_key} targeting is not allowed; use entity_id and ensure "
+                    "targets are in the MCP allowlist."
+                ),
+                "affected_entities": [],
+            }
+
     entity_ids = payload.get("entity_id")
     if isinstance(entity_ids, str):
         entity_ids = [entity_ids]
     elif entity_ids is None:
         entity_ids = []
 
-    # Hermes fork: when generic service calls are re-enabled, entity-scoped
-    # calls still cannot act outside the MCP allowlist.
+    # Enforce allowlist on explicit entity targets.
     for entity_id in entity_ids:
         if not policy.is_allowed(entity_id):
-            return {**policy.denied(entity_id), "success": False}
+            return {**policy.denied(entity_id), "success": False, "affected_entities": []}
 
     logger.info(f"Calling Home Assistant service: {domain}.{service} with data: {payload}")
     affected_entities = await call_service(domain, service, payload)
