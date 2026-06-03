@@ -171,9 +171,8 @@ async def test_call_service_tool_via_protocol():
                 return_value=httpx.Response(200, json={})
             )
 
-            # Pass the reloaded FastMCP instance — SDK extracts its _mcp_server.
             async with create_connected_server_and_client_session(
-                reloaded_mcp, raise_exceptions=True
+                reloaded_mcp._mcp_server, raise_exceptions=True
             ) as client:
                 result = await client.call_tool(
                     "call_service_tool", arguments={"domain": "automation", "service": "reload"}
