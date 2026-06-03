@@ -96,9 +96,8 @@ def async_handler(command_type: str):
 @gated_tool("read")
 @async_handler("get_version")
 async def get_version() -> str:
-    """
-    Get the Home Assistant version
-    
+    """Return the running Home Assistant version. Cheap connectivity/compat check.
+
     Returns:
         A string with the Home Assistant version (e.g., "2025.3.0")
     """
@@ -108,9 +107,8 @@ async def get_version() -> str:
 @gated_tool("read")
 @async_handler("get_entity")
 async def get_entity(entity_id: str, fields: Optional[List[str]] = None, detailed: bool = False) -> dict:
-    """
-    Get the state of a Home Assistant entity with optional field filtering
-    
+    """Read current state (and optional attributes) of ONE entity by exact entity_id. Use when the entity_id is already known; supports field filtering. For discovery use list_entities/search_entities_tool.
+
     Args:
         entity_id: The entity ID to get (e.g. 'light.living_room')
         fields: Optional list of fields to include (e.g. ['state', 'attr.brightness'])
@@ -288,9 +286,8 @@ async def list_entities(
     fields: Optional[List[str]] = None,
     detailed: bool = False
 ) -> List[Dict[str, Any]]:
-    """
-    Get a list of Home Assistant entities with optional filtering
-    
+    """List entities (optionally by domain) with current state. Use to enumerate what exists. Returns ONLY allowlisted entities. For keyword lookup use search_entities_tool; for one known id use get_entity.
+
     Args:
         domain: Optional domain to filter by (e.g., 'light', 'switch', 'sensor')
         search_query: Optional search term to filter entities by name, id, or attributes
@@ -417,8 +414,7 @@ async def get_entities_by_area(
     domain: Optional[str] = None,
     lean: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Get all entities assigned to a specific Home Assistant area (room).
+    """List entities in a specific HA area/room. Use for location-scoped questions. Returns ONLY allowlisted entities.
 
     Area lookup is case-insensitive and matches the area's name as configured
     in Home Assistant (e.g., "Kitchen", "Living Room"). Entities inherit their
@@ -459,9 +455,8 @@ async def get_entities_by_area(
 @gated_tool("read")
 @async_handler("search_entities_tool")
 async def search_entities_tool(query: str, limit: int = 20) -> Dict[str, Any]:
-    """
-    Search for entities matching a query string
-    
+    """Find entities whose id or friendly name matches a query. Use when you know roughly what you want but not the exact entity_id. Returns ONLY allowlisted entities.
+
     Args:
         query: The search query to match against entity IDs, names, and attributes.
               (Note: Does not support wildcards. To get all entities, leave this blank or use list_entities tool)
@@ -707,9 +702,8 @@ async def search_entities_resource_with_limit(query: str, limit: str) -> str:
 @gated_tool("read")
 @async_handler("domain_summary")
 async def domain_summary_tool(domain: str, example_limit: int = 3) -> Dict[str, Any]:
-    """
-    Get a summary of entities in a specific domain
-    
+    """Summarize ONE domain (counts + state distribution). Lighter than system_overview; use for a single domain without dumping every entity.
+
     Args:
         domain: The domain to summarize (e.g., 'light', 'switch', 'sensor')
         example_limit: Maximum number of examples to include for each state
@@ -732,9 +726,8 @@ async def domain_summary_tool(domain: str, example_limit: int = 3) -> Dict[str, 
 @gated_tool("read")
 @async_handler("system_overview")
 async def system_overview() -> Dict[str, Any]:
-    """
-    Get a comprehensive overview of the entire Home Assistant system
-    
+    """HEAVY / token-expensive: summary of ALL allowlisted entities across every domain. Use only for first-time exploration of an unfamiliar instance; prefer domain_summary_tool or list_entities for targeted questions.
+
     Returns:
         A dictionary containing:
         - total_entities: Total count of all entities
@@ -926,19 +919,18 @@ async def list_states_by_domain_resource(domain: str) -> str:
 @gated_tool("read")
 @async_handler("list_automations")
 async def list_automations() -> List[Dict[str, Any]]:
-    """
-    Get a list of all automations from Home Assistant
-    
+    """List automations and their state. READ-ONLY (this server cannot trigger or edit them). Returns ONLY allowlisted automation entities.
+
     This function retrieves all automations configured in Home Assistant,
     including their IDs, entity IDs, state, and display names.
-    
+
     Returns:
         A list of automation dictionaries, each containing id, entity_id, 
         state, and alias (friendly name) fields.
-        
+
     Examples:
         Returns all automation objects with state and friendly names
-    
+
     """
     logger.info("Getting all automations")
     try:
@@ -1243,13 +1235,12 @@ You'll help the user create optimized dashboards by:
 @gated_tool("history")
 @async_handler("get_history")
 async def get_history(entity_id: str, hours: int = 24) -> Dict[str, Any]:
-    """
-    Get the history of an entity's state changes
-    
+    """Recent RAW state-change history for one entity (last N hours). Limited to the recorder short-term window (~10 days). Use for 'what happened recently / did it flap'. For longer ranges or aggregates use get_statistics.
+
     Args:
         entity_id: The entity ID to get history for
         hours: Number of hours of history to retrieve (default: 24)
-    
+
     Returns:
         A dictionary containing:
         - entity_id: The entity ID requested
@@ -1257,7 +1248,7 @@ async def get_history(entity_id: str, hours: int = 24) -> Dict[str, Any]:
         - count: Number of state changes found
         - first_changed: Timestamp of earliest state change
         - last_changed: Timestamp of most recent state change
-        
+
     Examples:
         entity_id="light.living_room" - get 24h history
         entity_id="sensor.temperature", hours=168 - get 7 day history
@@ -1361,8 +1352,7 @@ async def get_history_range(
     start_time: str,
     end_time: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Get raw state-change history for an entity over a date/time range.
+    """RAW state-change history for one entity between two explicit timestamps. Same ~10-day short-term limit. Use for a specific recent window at full resolution.
 
     Like `get_history`, but takes an explicit window instead of "N hours
     from now". Useful for inspecting what happened on a specific day or
@@ -1403,8 +1393,7 @@ async def get_statistics(
     hours: int = 24,
     period: str = "hour",
 ) -> Dict[str, Any]:
-    """
-    Get long-term aggregated statistics for an entity over the last N hours.
+    """Long-term AGGREGATED stats (hourly mean/min/max) for one entity over the last N hours. Survives past the 10-day raw window. Use for BASELINES/trends and for high-frequency sensors where raw history is too many tokens. Requires a sensor with state_class.
 
     Uses HA's recorder statistics (over WebSocket) — aggregated buckets
     (mean / min / max per period) that survive the short-term retention
@@ -1446,8 +1435,7 @@ async def get_statistics_range(
     end_time: Optional[str] = None,
     period: str = "hour",
 ) -> Dict[str, Any]:
-    """
-    Get long-term aggregated statistics for an entity over a date/time range.
+    """Long-term AGGREGATED stats (mean/min/max) for one entity between two timestamps. Use for baselines/trends over an explicit historical window. Requires a sensor with state_class.
 
     Same data source as `get_statistics`, but with an explicit window —
     useful for "what was my power usage from Jan 1 to Jan 31?" type
@@ -1488,8 +1476,7 @@ async def get_error_log(
     search_term: Optional[str] = None,
     lines: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """
-    Get the Home Assistant error log for troubleshooting.
+    """Fetch the recent Home Assistant error log. Read-only diagnostic for HA-level troubleshooting.
 
     All filters are optional and combine (AND semantics). Stats
     (error_count, warning_count, integration_mentions, total_lines) are
