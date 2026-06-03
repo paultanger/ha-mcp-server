@@ -6,6 +6,9 @@ import os
 # by pytest before any test module, so this is the earliest reliable point.
 os.environ["HA_URL"] = "http://localhost:8123"
 os.environ["HA_TOKEN"] = "mock_token_for_tests"
+# Most tests exercise normal HA behavior; dedicated policy tests override
+# this to verify fail-closed allowlist handling.
+os.environ["HASS_MCP_ALLOWLIST"] = "*"
 
 import sys
 import pytest
@@ -22,7 +25,8 @@ def mock_env_vars():
     """Mock environment variables to prevent tests from using real credentials."""
     with patch.dict(os.environ, {
         "HA_URL": "http://localhost:8123",
-        "HA_TOKEN": "mock_token_for_tests"
+        "HA_TOKEN": "mock_token_for_tests",
+        "HASS_MCP_ALLOWLIST": "*"
     }):
         yield
 

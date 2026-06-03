@@ -13,7 +13,9 @@ runs inside an anyio task group, which conflicts with pytest-asyncio's task
 boundary across fixture setup and test body.
 """
 
+import importlib
 from typing import Any, Dict
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import respx
@@ -61,9 +63,7 @@ async def test_initialize_handshake():
 
 
 EXPECTED_TOOLS = {
-    "call_service_tool",
     "domain_summary_tool",
-    "entity_action",
     "get_entities_by_area",
     "get_entity",
     "get_error_log",
@@ -74,7 +74,6 @@ EXPECTED_TOOLS = {
     "get_version",
     "list_automations",
     "list_entities",
-    "restart_ha",
     "search_entities_tool",
     "system_overview",
 }
@@ -90,15 +89,7 @@ async def test_list_tools_returns_expected_set():
         assert got == EXPECTED_TOOLS, f"Tool surface drift: {got ^ EXPECTED_TOOLS}"
 
 
-EXPECTED_PROMPTS = {
-    "automation_health_check",
-    "create_automation",
-    "dashboard_layout_generator",
-    "debug_automation",
-    "entity_naming_consistency",
-    "routine_optimizer",
-    "troubleshoot_entity",
-}
+EXPECTED_PROMPTS = set()
 
 
 async def test_list_prompts_returns_expected_set():
@@ -142,31 +133,67 @@ async def test_all_prompts_use_valid_roles():
 
 
 @respx.mock
-async def test_call_service_tool_returns_dict_for_empty_list():
-    """call_service_tool must yield a dict even when HA returns [] (e.g. automation.reload).
+async def test_call_service_tool_via_protocol():
+    """The control tool is registered via MCP when the control capability is
+    enabled, and returns a dict with success status and affected_entities.
 
-    The tool is annotated `Dict[str, Any]` and MCP SDKs that enforce return-type
-    validation reject list payloads. The serialized result must parse to a dict.
+    This test enables the control capability, reloads the server module so
+    the tool gets registered with FastMCP, then invokes it via
+    ``client.call_tool`` to cover tool registration + serialization + SDK
+    output validation in one pass.
     """
     import json
+    import os
+    import sys
 
-    respx.post("http://localhost:8123/api/services/automation/reload").mock(
-        return_value=httpx.Response(200, json=[])
-    )
-    async with create_connected_server_and_client_session(
-        mcp._mcp_server, raise_exceptions=True
-    ) as client:
-        result = await client.call_tool(
-            "call_service_tool",
-            arguments={"domain": "automation", "service": "reload"},
-        )
-        assert not result.isError, f"call_service_tool errored: {result.content}"
-        payload = json.loads(result.content[0].text)
-        assert isinstance(payload, dict), (
-            f"call_service_tool returned {type(payload).__name__}, expected dict. "
-            f"This breaks MCP output validation on SDKs that enforce the return "
-            f"type annotation. Got: {payload!r}"
-        )
+    original_control = os.environ.get("HASS_MCP_ENABLE_CONTROL")
+    try:
+        # Enable control capability and reload modules so the tool registers.
+        os.environ["HASS_MCP_ENABLE_CONTROL"] = "true"
+
+        # Reload policy first so its CAPABILITIES dict picks up the new env var.
+        if "app.policy" in sys.modules:
+            importlib.reload(sys.modules["app.policy"])
+
+        # Reload server — @gated_tool("control") now evaluates True and registers
+        # call_service_tool on the NEW mcp/_mcp_server instance.
+        if "app.server" in sys.modules:
+            importlib.reload(sys.modules["app.server"])
+
+        # Import the RELOADED mcp instance (not the one captured at top of file).
+        from app.server import mcp as reloaded_mcp
+
+        # Patch where the function is used (imported into app.server namespace).
+        patched_call = AsyncMock(return_value=[])
+        with patch("app.server.call_service", patched_call):
+            # Mock the HA service call HTTP request so it doesn't reach a real server.
+            respx.post("http://localhost:8123/api/services/automation/reload").mock(
+                return_value=httpx.Response(200, json={})
+            )
+
+            async with create_connected_server_and_client_session(
+                reloaded_mcp._mcp_server, raise_exceptions=True
+            ) as client:
+                result = await client.call_tool(
+                    "call_service_tool", arguments={"domain": "automation", "service": "reload"}
+                )
+    finally:
+        if original_control is None:
+            os.environ.pop("HASS_MCP_ENABLE_CONTROL", None)
+        else:
+            os.environ["HASS_MCP_ENABLE_CONTROL"] = original_control
+
+        if "app.policy" in sys.modules:
+            importlib.reload(sys.modules["app.policy"])
+        if "app.server" in sys.modules:
+            importlib.reload(sys.modules["app.server"])
+
+    assert not result.isError
+    patched_call.assert_called_once()
+    payload = json.loads(result.content[0].text)
+    assert isinstance(payload, dict)
+    assert payload["success"] is True
+    assert payload["affected_entities"] == []
 
 
 # --- Roundtrip with respx (expected to pass on master) ----------------------

@@ -47,6 +47,37 @@ mcp = FastMCP(
     json_response=_http_mode,
 )
 
+# --- Hermes fork: capability gating + allowlist policy ----------------------
+# Tools/resources/prompts are registered only if their capability group is
+# enabled. Nothing is deleted — flip a group back on via its env var
+# (e.g. HASS_MCP_ENABLE_CONTROL=true) to restore it. Defaults: read/history/
+# diagnostics/resources ON, control/prompts OFF. See app/policy.py.
+from app import policy
+
+policy.log_startup_summary()
+
+
+def gated_tool(capability: str):
+    """Register an MCP tool only if its capability group is enabled (policy)."""
+    def deco(fn):
+        return mcp.tool()(fn) if policy.enabled(capability) else fn
+    return deco
+
+
+def gated_resource(uri: str, capability: str = "resources"):
+    """Register an MCP resource only if its capability group is enabled."""
+    def deco(fn):
+        return mcp.resource(uri)(fn) if policy.enabled(capability) else fn
+    return deco
+
+
+def gated_prompt(capability: str = "prompts"):
+    """Register an MCP prompt only if its capability group is enabled."""
+    def deco(fn):
+        return mcp.prompt()(fn) if policy.enabled(capability) else fn
+    return deco
+# ----------------------------------------------------------------------------
+
 def async_handler(command_type: str):
     """
     Simple decorator that logs the command
@@ -62,24 +93,22 @@ def async_handler(command_type: str):
         return cast(Callable[..., Awaitable[T]], wrapper)
     return decorator
 
-@mcp.tool()
+@gated_tool("read")
 @async_handler("get_version")
 async def get_version() -> str:
-    """
-    Get the Home Assistant version
-    
+    """Return the running Home Assistant version. Cheap connectivity/compat check.
+
     Returns:
         A string with the Home Assistant version (e.g., "2025.3.0")
     """
     logger.info("Getting Home Assistant version")
     return await get_hass_version()
 
-@mcp.tool()
+@gated_tool("read")
 @async_handler("get_entity")
 async def get_entity(entity_id: str, fields: Optional[List[str]] = None, detailed: bool = False) -> dict:
-    """
-    Get the state of a Home Assistant entity with optional field filtering
-    
+    """Read current state (and optional attributes) of ONE entity by exact entity_id. Use when the entity_id is already known; supports field filtering. For discovery use list_entities/search_entities_tool.
+
     Args:
         entity_id: The entity ID to get (e.g. 'light.living_room')
         fields: Optional list of fields to include (e.g. ['state', 'attr.brightness'])
@@ -101,7 +130,7 @@ async def get_entity(entity_id: str, fields: Optional[List[str]] = None, detaile
         # Return lean format with essential fields
         return await get_entity_state(entity_id, lean=True)
 
-@mcp.tool()
+@gated_tool("control")
 @async_handler("entity_action")
 async def entity_action(entity_id: str, action: str, params: Optional[Dict[str, Any]] = None) -> dict:
     """
@@ -128,7 +157,12 @@ async def entity_action(entity_id: str, action: str, params: Optional[Dict[str, 
     """
     if action not in ["on", "off", "toggle"]:
         return {"error": f"Invalid action: {action}. Valid actions are 'on', 'off', 'toggle'"}
-    
+
+    # Allowlist enforcement (Hermes fork): even when control is re-enabled,
+    # actions remain limited to allowlisted entities.
+    if not policy.is_allowed(entity_id):
+        return policy.denied(entity_id)
+
     # Map action to service name
     service = action if action == "toggle" else f"turn_{action}"
     
@@ -141,7 +175,7 @@ async def entity_action(entity_id: str, action: str, params: Optional[Dict[str, 
     logger.info(f"Performing action '{action}' on entity: {entity_id} with params: {params}")
     return await call_service(domain, service, data)
 
-@mcp.resource("hass://entities/{entity_id}")
+@gated_resource("hass://entities/{entity_id}")
 @async_handler("get_entity_resource")
 async def get_entity_resource(entity_id: str) -> str:
     """
@@ -155,8 +189,8 @@ async def get_entity_resource(entity_id: str) -> str:
     """
     logger.info(f"Getting entity resource: {entity_id}")
     
-    # Get the entity state with caching (using lean format for token efficiency)
-    state = await get_entity_state(entity_id, use_cache=True, lean=True)
+    # Get the entity state
+    state = await get_entity_state(entity_id, lean=True)
     
     # Check if there was an error
     if "error" in state:
@@ -243,7 +277,7 @@ async def get_entity_resource(entity_id: str) -> str:
     
     return result
 
-@mcp.tool()
+@gated_tool("read")
 @async_handler("list_entities")
 async def list_entities(
     domain: Optional[str] = None, 
@@ -252,9 +286,8 @@ async def list_entities(
     fields: Optional[List[str]] = None,
     detailed: bool = False
 ) -> List[Dict[str, Any]]:
-    """
-    Get a list of Home Assistant entities with optional filtering
-    
+    """List entities (optionally by domain) with current state. Use to enumerate what exists. Returns ONLY allowlisted entities. For keyword lookup use search_entities_tool; for one known id use get_entity.
+
     Args:
         domain: Optional domain to filter by (e.g., 'light', 'switch', 'sensor')
         search_query: Optional search term to filter entities by name, id, or attributes
@@ -309,7 +342,7 @@ async def list_entities(
         lean=not detailed  # Use lean format unless detailed is requested
     )
 
-@mcp.resource("hass://entities")
+@gated_resource("hass://entities")
 @async_handler("get_all_entities_resource")
 async def get_all_entities_resource() -> str:
     """
@@ -374,15 +407,14 @@ async def get_all_entities_resource() -> str:
     
     return result
 
-@mcp.tool()
+@gated_tool("read")
 @async_handler("get_entities_by_area")
 async def get_entities_by_area(
     area: str,
     domain: Optional[str] = None,
     lean: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Get all entities assigned to a specific Home Assistant area (room).
+    """List entities in a specific HA area/room. Use for location-scoped questions. Returns ONLY allowlisted entities.
 
     Area lookup is case-insensitive and matches the area's name as configured
     in Home Assistant (e.g., "Kitchen", "Living Room"). Entities inherit their
@@ -420,12 +452,11 @@ async def get_entities_by_area(
     }
 
 
-@mcp.tool()
+@gated_tool("read")
 @async_handler("search_entities_tool")
 async def search_entities_tool(query: str, limit: int = 20) -> Dict[str, Any]:
-    """
-    Search for entities matching a query string
-    
+    """Find entities whose id or friendly name matches a query. Use when you know roughly what you want but not the exact entity_id. Returns ONLY allowlisted entities.
+
     Args:
         query: The search query to match against entity IDs, names, and attributes.
               (Note: Does not support wildcards. To get all entities, leave this blank or use list_entities tool)
@@ -552,7 +583,7 @@ async def search_entities_tool(query: str, limit: int = 20) -> Dict[str, Any]:
         "query": query
     }
     
-@mcp.resource("hass://search/{query}/{limit}")
+@gated_resource("hass://search/{query}/{limit}")
 @async_handler("search_entities_resource_with_limit")
 async def search_entities_resource_with_limit(query: str, limit: str) -> str:
     """
@@ -668,12 +699,11 @@ async def search_entities_resource_with_limit(query: str, limit: str) -> str:
 
 # The domain_summary_tool is already implemented, no need to duplicate it
 
-@mcp.tool()
+@gated_tool("read")
 @async_handler("domain_summary")
 async def domain_summary_tool(domain: str, example_limit: int = 3) -> Dict[str, Any]:
-    """
-    Get a summary of entities in a specific domain
-    
+    """Summarize ONE domain (counts + state distribution). Lighter than system_overview; use for a single domain without dumping every entity.
+
     Args:
         domain: The domain to summarize (e.g., 'light', 'switch', 'sensor')
         example_limit: Maximum number of examples to include for each state
@@ -689,16 +719,16 @@ async def domain_summary_tool(domain: str, example_limit: int = 3) -> Dict[str, 
         domain="light" - get light summary
         domain="climate", example_limit=5 - climate summary with more examples
     Best Practices:
-        - Use this before retrieving all entities in a domain to understand what's available    """
+        - Use this before retrieving all entities in a domain to understand what's available
+    """
     logger.info(f"Getting domain summary for: {domain}")
     return await summarize_domain(domain, example_limit)
 
-@mcp.tool()
+@gated_tool("read")
 @async_handler("system_overview")
 async def system_overview() -> Dict[str, Any]:
-    """
-    Get a comprehensive overview of the entire Home Assistant system
-    
+    """HEAVY / token-expensive: summary of ALL allowlisted entities across every domain. Use only for first-time exploration of an unfamiliar instance; prefer domain_summary_tool or list_entities for targeted questions.
+
     Returns:
         A dictionary containing:
         - total_entities: Total count of all entities
@@ -717,7 +747,7 @@ async def system_overview() -> Dict[str, Any]:
     logger.info("Generating complete system overview")
     return await get_system_overview()
 
-@mcp.resource("hass://entities/{entity_id}/detailed")
+@gated_resource("hass://entities/{entity_id}/detailed")
 @async_handler("get_entity_resource_detailed")
 async def get_entity_resource_detailed(entity_id: str) -> str:
     """
@@ -737,7 +767,7 @@ async def get_entity_resource_detailed(entity_id: str) -> str:
     logger.info(f"Getting detailed entity resource: {entity_id}")
     
     # Get all fields, no filtering (detailed view explicitly requests all data)
-    state = await get_entity_state(entity_id, use_cache=True, lean=False)
+    state = await get_entity_state(entity_id, lean=False)
     
     # Check if there was an error
     if "error" in state:
@@ -819,7 +849,7 @@ async def get_entity_resource_detailed(entity_id: str) -> str:
     
     return result
 
-@mcp.resource("hass://entities/domain/{domain}")
+@gated_resource("hass://entities/domain/{domain}")
 @async_handler("list_states_by_domain_resource")
 async def list_states_by_domain_resource(domain: str) -> str:
     """
@@ -887,22 +917,21 @@ async def list_states_by_domain_resource(domain: str) -> str:
     return result
 
 # Automation management MCP tools
-@mcp.tool()
+@gated_tool("read")
 @async_handler("list_automations")
 async def list_automations() -> List[Dict[str, Any]]:
-    """
-    Get a list of all automations from Home Assistant
-    
+    """List automations and their state. READ-ONLY (this server cannot trigger or edit them). Returns ONLY allowlisted automation entities.
+
     This function retrieves all automations configured in Home Assistant,
     including their IDs, entity IDs, state, and display names.
-    
+
     Returns:
         A list of automation dictionaries, each containing id, entity_id, 
         state, and alias (friendly name) fields.
-        
+
     Examples:
         Returns all automation objects with state and friendly names
-    
+
     """
     logger.info("Getting all automations")
     try:
@@ -926,7 +955,7 @@ async def list_automations() -> List[Dict[str, Any]]:
 
 # We already have a list_automations tool, so no need to duplicate functionality
 
-@mcp.tool()
+@gated_tool("control")
 @async_handler("restart_ha")
 async def restart_ha() -> Dict[str, Any]:
     """
@@ -940,7 +969,7 @@ async def restart_ha() -> Dict[str, Any]:
     logger.info("Restarting Home Assistant")
     return await restart_home_assistant()
 
-@mcp.tool()
+@gated_tool("control")
 @async_handler("call_service")
 async def call_service_tool(domain: str, service: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -961,8 +990,37 @@ async def call_service_tool(domain: str, service: str, data: Optional[Dict[str, 
         domain='fan', service='set_percentage', data={'entity_id': 'fan.x', 'percentage': 50}
 
     """
-    logger.info(f"Calling Home Assistant service: {domain}.{service} with data: {data}")
-    affected_entities = await call_service(domain, service, data or {})
+    payload = data or {}
+
+    # Hermes fork: when generic service calls are re-enabled, entity-scoped
+    # calls still cannot act outside the MCP allowlist. Prevent bypass via
+    # HA's alternate targeting fields.
+    for targeting_key in ("area_id", "device_id", "label_id"):
+        if targeting_key in payload:
+            return {
+                "success": False,
+                "domain": domain,
+                "service": service,
+                "error": (
+                    f"{targeting_key} targeting is not allowed; use entity_id and ensure "
+                    "targets are in the MCP allowlist."
+                ),
+                "affected_entities": [],
+            }
+
+    entity_ids = payload.get("entity_id")
+    if isinstance(entity_ids, str):
+        entity_ids = [entity_ids]
+    elif entity_ids is None:
+        entity_ids = []
+
+    # Enforce allowlist on explicit entity targets.
+    for entity_id in entity_ids:
+        if not policy.is_allowed(entity_id):
+            return {**policy.denied(entity_id), "success": False, "affected_entities": []}
+
+    logger.info(f"Calling Home Assistant service: {domain}.{service} with data: {payload}")
+    affected_entities = await call_service(domain, service, payload)
     return {
         "success": True,
         "domain": domain,
@@ -971,7 +1029,7 @@ async def call_service_tool(domain: str, service: str, data: Optional[Dict[str, 
     }
 
 # Prompt functionality
-@mcp.prompt()
+@gated_prompt()
 def create_automation(trigger_type: str, entity_id: str = None):
     """
     Guide a user through creating a Home Assistant automation
@@ -1017,7 +1075,7 @@ You'll guide the user through creating an automation with the following steps:
         {"role": "user", "content": user_message}
     ]
 
-@mcp.prompt()
+@gated_prompt()
 def debug_automation(automation_id: str):
     """
     Help a user troubleshoot an automation that isn't working
@@ -1046,7 +1104,7 @@ You'll help the user diagnose problems with their automation by checking:
         {"role": "user", "content": user_message}
     ]
 
-@mcp.prompt()
+@gated_prompt()
 def troubleshoot_entity(entity_id: str):
     """
     Guide a user through troubleshooting issues with an entity
@@ -1076,7 +1134,7 @@ You'll help the user diagnose problems with their entity by checking:
         {"role": "user", "content": user_message}
     ]
 
-@mcp.prompt()
+@gated_prompt()
 def routine_optimizer():
     """
     Analyze usage patterns and suggest optimized routines based on actual behavior
@@ -1104,7 +1162,7 @@ You'll help the user analyze their usage patterns and create optimized routines 
         {"role": "user", "content": user_message}
     ]
 
-@mcp.prompt()
+@gated_prompt()
 def automation_health_check():
     """
     Review all automations, find conflicts, redundancies, or improvement opportunities
@@ -1133,7 +1191,7 @@ You'll help the user perform a comprehensive audit of their automations by:
         {"role": "user", "content": user_message}
     ]
 
-@mcp.prompt()
+@gated_prompt()
 def entity_naming_consistency():
     """
     Audit entity names and suggest standardization improvements
@@ -1161,7 +1219,7 @@ You'll help the user audit and improve their entity naming by:
         {"role": "user", "content": user_message}
     ]
 
-@mcp.prompt()
+@gated_prompt()
 def dashboard_layout_generator():
     """
     Create optimized dashboards based on user preferences and usage patterns
@@ -1191,16 +1249,15 @@ You'll help the user create optimized dashboards by:
     ]
 
 # Documentation endpoint
-@mcp.tool()
+@gated_tool("history")
 @async_handler("get_history")
 async def get_history(entity_id: str, hours: int = 24) -> Dict[str, Any]:
-    """
-    Get the history of an entity's state changes
-    
+    """Recent RAW state-change history for one entity (last N hours). Limited to the recorder short-term window (~10 days). Use for 'what happened recently / did it flap'. For longer ranges or aggregates use get_statistics.
+
     Args:
         entity_id: The entity ID to get history for
         hours: Number of hours of history to retrieve (default: 24)
-    
+
     Returns:
         A dictionary containing:
         - entity_id: The entity ID requested
@@ -1208,7 +1265,7 @@ async def get_history(entity_id: str, hours: int = 24) -> Dict[str, Any]:
         - count: Number of state changes found
         - first_changed: Timestamp of earliest state change
         - last_changed: Timestamp of most recent state change
-        
+
     Examples:
         entity_id="light.living_room" - get 24h history
         entity_id="sensor.temperature", hours=168 - get 7 day history
@@ -1305,15 +1362,14 @@ def _flatten_history(history_data: Any, entity_id: str) -> Dict[str, Any]:
     }
 
 
-@mcp.tool()
+@gated_tool("history")
 @async_handler("get_history_range")
 async def get_history_range(
     entity_id: str,
     start_time: str,
     end_time: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Get raw state-change history for an entity over a date/time range.
+    """RAW state-change history for one entity between two explicit timestamps. Same ~10-day short-term limit. Use for a specific recent window at full resolution.
 
     Like `get_history`, but takes an explicit window instead of "N hours
     from now". Useful for inspecting what happened on a specific day or
@@ -1347,15 +1403,14 @@ async def get_history_range(
     return _flatten_history(history_data, entity_id)
 
 
-@mcp.tool()
+@gated_tool("history")
 @async_handler("get_statistics")
 async def get_statistics(
     entity_id: str,
     hours: int = 24,
     period: str = "hour",
 ) -> Dict[str, Any]:
-    """
-    Get long-term aggregated statistics for an entity over the last N hours.
+    """Long-term AGGREGATED stats (hourly mean/min/max) for one entity over the last N hours. Survives past the 10-day raw window. Use for BASELINES/trends and for high-frequency sensors where raw history is too many tokens. Requires a sensor with state_class.
 
     Uses HA's recorder statistics (over WebSocket) — aggregated buckets
     (mean / min / max per period) that survive the short-term retention
@@ -1389,7 +1444,7 @@ async def get_statistics(
         return {"entity_id": entity_id, "error": str(e), "statistics": []}
 
 
-@mcp.tool()
+@gated_tool("history")
 @async_handler("get_statistics_range")
 async def get_statistics_range(
     entity_id: str,
@@ -1397,8 +1452,7 @@ async def get_statistics_range(
     end_time: Optional[str] = None,
     period: str = "hour",
 ) -> Dict[str, Any]:
-    """
-    Get long-term aggregated statistics for an entity over a date/time range.
+    """Long-term AGGREGATED stats (mean/min/max) for one entity between two timestamps. Use for baselines/trends over an explicit historical window. Requires a sensor with state_class.
 
     Same data source as `get_statistics`, but with an explicit window —
     useful for "what was my power usage from Jan 1 to Jan 31?" type
@@ -1431,7 +1485,7 @@ async def get_statistics_range(
         return {"entity_id": entity_id, "error": str(e), "statistics": []}
 
 
-@mcp.tool()
+@gated_tool("diagnostics")
 @async_handler("get_error_log")
 async def get_error_log(
     level: Optional[str] = None,
@@ -1439,8 +1493,7 @@ async def get_error_log(
     search_term: Optional[str] = None,
     lines: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """
-    Get the Home Assistant error log for troubleshooting.
+    """Fetch the recent Home Assistant error log. Read-only diagnostic for HA-level troubleshooting.
 
     All filters are optional and combine (AND semantics). Stats
     (error_count, warning_count, integration_mentions, total_lines) are

@@ -11,6 +11,7 @@ import truststore
 
 from app.areas import get_area, get_all_areas
 from app.config import HA_URL, HA_TOKEN, get_ha_headers
+from app import policy  # Hermes fork: capability flags + entity allowlist
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -220,6 +221,10 @@ async def get_entity_state(
     Returns:
         Entity state dictionary, optionally filtered to include only specified fields
     """
+    # Allowlist enforcement (Hermes fork)
+    if not policy.is_allowed(entity_id):
+        return policy.denied(entity_id)
+
     # Fetch directly
     client = await get_client()
     response = await client.get(
@@ -285,6 +290,11 @@ async def get_entities(
     areas = await get_all_areas(client)
     for entity in entities:
         entity["area"] = areas.get(entity["entity_id"])
+
+    # Allowlist enforcement (Hermes fork): drop anything not explicitly allowed.
+    # This is the central choke point — list_entities, search, by_area,
+    # domain_summary, list_automations, and the hass:// resources all flow here.
+    entities = policy.filter_entities(entities)
 
     # Filter by domain if specified
     if domain:
@@ -625,8 +635,11 @@ async def get_entity_history(entity_id: str, hours: int) -> List[Dict[str, Any]]
     Returns:
         A list of state change objects, or an error dictionary.
     """
+    if not policy.is_allowed(entity_id):
+        return policy.denied(entity_id)
+
     client = await get_client()
-    
+
     # Calculate the end time for the history lookup
     end_time = datetime.now(timezone.utc)
     end_time_iso = end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -694,6 +707,8 @@ async def get_entity_history_range(
         A list of state-change buckets exactly as HA returns them
         (`/api/history/period/...` shape).
     """
+    if not policy.is_allowed(entity_id):
+        return policy.denied(entity_id)
     start_dt = _parse_iso_dt(start_time)
     end_dt = _parse_iso_dt(end_time) if end_time is not None else datetime.now(timezone.utc)
     if start_dt >= end_dt:
@@ -741,6 +756,8 @@ async def get_entity_statistics_range(
         ``statistics`` is the list HA returned (each entry has `start`,
         `end`, `mean`, `min`, `max`, optionally `sum`/`state`).
     """
+    if not policy.is_allowed(entity_id):
+        return {**policy.denied(entity_id), "statistics": []}
     if period not in _STATISTICS_PERIODS:
         raise ValueError(
             f"period must be one of {sorted(_STATISTICS_PERIODS)}, got {period!r}"
@@ -811,6 +828,10 @@ async def get_system_overview() -> Dict[str, Any]:
         response = await client.get(f"{HA_URL}/api/states", headers=get_ha_headers())
         response.raise_for_status()
         all_entities_raw = response.json()
+
+        # Allowlist enforcement (Hermes fork): system_overview does its own raw
+        # /api/states fetch (bypassing get_entities), so it must be filtered here too.
+        all_entities_raw = policy.filter_entities(all_entities_raw)
 
         # Resolve areas in one bulk template call.
         areas = await get_all_areas(client)

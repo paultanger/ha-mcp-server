@@ -218,6 +218,33 @@ docker run --rm \
 
 `SSL_CERT_FILE` always takes precedence over the OS store when set. `verify=False` is intentionally not supported — use `HA_URL=http://...` if you genuinely want unencrypted local LAN traffic.
 
+## Read-only policy and entity allowlist
+
+This fork is read-only by default and uses its own entity allowlist, independent
+of Home Assistant's Assist exposure settings.
+
+Control tools and prompts remain in the code, but are not registered unless explicitly enabled (HASS_MCP_ENABLE_CONTROL / HASS_MCP_ENABLE_PROMPTS). When disabled, they will not appear in MCP discovery (list_tools / list_prompts), and related examples below require enabling the corresponding capability.
+
+```bash
+HASS_MCP_ENABLE_READ=true
+HASS_MCP_ENABLE_HISTORY=true
+HASS_MCP_ENABLE_DIAGNOSTICS=true
+HASS_MCP_ENABLE_RESOURCES=true
+HASS_MCP_ENABLE_CONTROL=false
+HASS_MCP_ENABLE_PROMPTS=false
+```
+
+Entity access is fail-closed. If neither allowlist source contains patterns,
+entity reads and entity-scoped actions are denied. Patterns are exact entity IDs
+or case-sensitive `fnmatch` globs:
+
+```bash
+HASS_MCP_ALLOWLIST=sensor.gpu_*,sensor.*_temperature,binary_sensor.*_offline
+HASS_MCP_ALLOWLIST_FILE=/path/to/allowlist.txt
+```
+
+The allowlist file accepts one pattern per line and supports `#` comments.
+
 ## Usage Examples
 
 Here are some examples of prompts you can use with Claude once Hass-MCP is set up:
