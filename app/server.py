@@ -47,6 +47,37 @@ mcp = FastMCP(
     json_response=_http_mode,
 )
 
+# --- Hermes fork: capability gating + allowlist policy ----------------------
+# Tools/resources/prompts are registered only if their capability group is
+# enabled. Nothing is deleted — flip a group back on via its env var
+# (e.g. HASS_MCP_ENABLE_CONTROL=true) to restore it. Defaults: read/history/
+# diagnostics/resources ON, control/prompts OFF. See app/policy.py.
+from app import policy
+
+policy.log_startup_summary()
+
+
+def gated_tool(capability: str):
+    """Register an MCP tool only if its capability group is enabled (policy)."""
+    def deco(fn):
+        return mcp.tool()(fn) if policy.enabled(capability) else fn
+    return deco
+
+
+def gated_resource(uri: str, capability: str = "resources"):
+    """Register an MCP resource only if its capability group is enabled."""
+    def deco(fn):
+        return mcp.resource(uri)(fn) if policy.enabled(capability) else fn
+    return deco
+
+
+def gated_prompt(capability: str = "prompts"):
+    """Register an MCP prompt only if its capability group is enabled."""
+    def deco(fn):
+        return mcp.prompt()(fn) if policy.enabled(capability) else fn
+    return deco
+# ----------------------------------------------------------------------------
+
 def async_handler(command_type: str):
     """
     Simple decorator that logs the command
@@ -62,7 +93,7 @@ def async_handler(command_type: str):
         return cast(Callable[..., Awaitable[T]], wrapper)
     return decorator
 
-@mcp.tool()
+@gated_tool("read")
 @async_handler("get_version")
 async def get_version() -> str:
     """
@@ -74,7 +105,7 @@ async def get_version() -> str:
     logger.info("Getting Home Assistant version")
     return await get_hass_version()
 
-@mcp.tool()
+@gated_tool("read")
 @async_handler("get_entity")
 async def get_entity(entity_id: str, fields: Optional[List[str]] = None, detailed: bool = False) -> dict:
     """
@@ -101,7 +132,7 @@ async def get_entity(entity_id: str, fields: Optional[List[str]] = None, detaile
         # Return lean format with essential fields
         return await get_entity_state(entity_id, lean=True)
 
-@mcp.tool()
+@gated_tool("control")
 @async_handler("entity_action")
 async def entity_action(entity_id: str, action: str, params: Optional[Dict[str, Any]] = None) -> dict:
     """
@@ -128,7 +159,12 @@ async def entity_action(entity_id: str, action: str, params: Optional[Dict[str, 
     """
     if action not in ["on", "off", "toggle"]:
         return {"error": f"Invalid action: {action}. Valid actions are 'on', 'off', 'toggle'"}
-    
+
+    # Allowlist enforcement (Hermes fork): even when control is re-enabled,
+    # actions remain limited to allowlisted entities.
+    if not policy.is_allowed(entity_id):
+        return policy.denied(entity_id)
+
     # Map action to service name
     service = action if action == "toggle" else f"turn_{action}"
     
@@ -141,7 +177,7 @@ async def entity_action(entity_id: str, action: str, params: Optional[Dict[str, 
     logger.info(f"Performing action '{action}' on entity: {entity_id} with params: {params}")
     return await call_service(domain, service, data)
 
-@mcp.resource("hass://entities/{entity_id}")
+@gated_resource("hass://entities/{entity_id}")
 @async_handler("get_entity_resource")
 async def get_entity_resource(entity_id: str) -> str:
     """
@@ -243,7 +279,7 @@ async def get_entity_resource(entity_id: str) -> str:
     
     return result
 
-@mcp.tool()
+@gated_tool("read")
 @async_handler("list_entities")
 async def list_entities(
     domain: Optional[str] = None, 
@@ -309,7 +345,7 @@ async def list_entities(
         lean=not detailed  # Use lean format unless detailed is requested
     )
 
-@mcp.resource("hass://entities")
+@gated_resource("hass://entities")
 @async_handler("get_all_entities_resource")
 async def get_all_entities_resource() -> str:
     """
@@ -374,7 +410,7 @@ async def get_all_entities_resource() -> str:
     
     return result
 
-@mcp.tool()
+@gated_tool("read")
 @async_handler("get_entities_by_area")
 async def get_entities_by_area(
     area: str,
@@ -420,7 +456,7 @@ async def get_entities_by_area(
     }
 
 
-@mcp.tool()
+@gated_tool("read")
 @async_handler("search_entities_tool")
 async def search_entities_tool(query: str, limit: int = 20) -> Dict[str, Any]:
     """
@@ -552,7 +588,7 @@ async def search_entities_tool(query: str, limit: int = 20) -> Dict[str, Any]:
         "query": query
     }
     
-@mcp.resource("hass://search/{query}/{limit}")
+@gated_resource("hass://search/{query}/{limit}")
 @async_handler("search_entities_resource_with_limit")
 async def search_entities_resource_with_limit(query: str, limit: str) -> str:
     """
@@ -668,7 +704,7 @@ async def search_entities_resource_with_limit(query: str, limit: str) -> str:
 
 # The domain_summary_tool is already implemented, no need to duplicate it
 
-@mcp.tool()
+@gated_tool("read")
 @async_handler("domain_summary")
 async def domain_summary_tool(domain: str, example_limit: int = 3) -> Dict[str, Any]:
     """
@@ -693,7 +729,7 @@ async def domain_summary_tool(domain: str, example_limit: int = 3) -> Dict[str, 
     logger.info(f"Getting domain summary for: {domain}")
     return await summarize_domain(domain, example_limit)
 
-@mcp.tool()
+@gated_tool("read")
 @async_handler("system_overview")
 async def system_overview() -> Dict[str, Any]:
     """
@@ -717,7 +753,7 @@ async def system_overview() -> Dict[str, Any]:
     logger.info("Generating complete system overview")
     return await get_system_overview()
 
-@mcp.resource("hass://entities/{entity_id}/detailed")
+@gated_resource("hass://entities/{entity_id}/detailed")
 @async_handler("get_entity_resource_detailed")
 async def get_entity_resource_detailed(entity_id: str) -> str:
     """
@@ -819,7 +855,7 @@ async def get_entity_resource_detailed(entity_id: str) -> str:
     
     return result
 
-@mcp.resource("hass://entities/domain/{domain}")
+@gated_resource("hass://entities/domain/{domain}")
 @async_handler("list_states_by_domain_resource")
 async def list_states_by_domain_resource(domain: str) -> str:
     """
@@ -887,7 +923,7 @@ async def list_states_by_domain_resource(domain: str) -> str:
     return result
 
 # Automation management MCP tools
-@mcp.tool()
+@gated_tool("read")
 @async_handler("list_automations")
 async def list_automations() -> List[Dict[str, Any]]:
     """
@@ -926,7 +962,7 @@ async def list_automations() -> List[Dict[str, Any]]:
 
 # We already have a list_automations tool, so no need to duplicate functionality
 
-@mcp.tool()
+@gated_tool("control")
 @async_handler("restart_ha")
 async def restart_ha() -> Dict[str, Any]:
     """
@@ -940,7 +976,7 @@ async def restart_ha() -> Dict[str, Any]:
     logger.info("Restarting Home Assistant")
     return await restart_home_assistant()
 
-@mcp.tool()
+@gated_tool("control")
 @async_handler("call_service")
 async def call_service_tool(domain: str, service: str, data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -971,7 +1007,7 @@ async def call_service_tool(domain: str, service: str, data: Optional[Dict[str, 
     }
 
 # Prompt functionality
-@mcp.prompt()
+@gated_prompt()
 def create_automation(trigger_type: str, entity_id: str = None):
     """
     Guide a user through creating a Home Assistant automation
@@ -1017,7 +1053,7 @@ You'll guide the user through creating an automation with the following steps:
         {"role": "user", "content": user_message}
     ]
 
-@mcp.prompt()
+@gated_prompt()
 def debug_automation(automation_id: str):
     """
     Help a user troubleshoot an automation that isn't working
@@ -1046,7 +1082,7 @@ You'll help the user diagnose problems with their automation by checking:
         {"role": "user", "content": user_message}
     ]
 
-@mcp.prompt()
+@gated_prompt()
 def troubleshoot_entity(entity_id: str):
     """
     Guide a user through troubleshooting issues with an entity
@@ -1076,7 +1112,7 @@ You'll help the user diagnose problems with their entity by checking:
         {"role": "user", "content": user_message}
     ]
 
-@mcp.prompt()
+@gated_prompt()
 def routine_optimizer():
     """
     Analyze usage patterns and suggest optimized routines based on actual behavior
@@ -1104,7 +1140,7 @@ You'll help the user analyze their usage patterns and create optimized routines 
         {"role": "user", "content": user_message}
     ]
 
-@mcp.prompt()
+@gated_prompt()
 def automation_health_check():
     """
     Review all automations, find conflicts, redundancies, or improvement opportunities
@@ -1133,7 +1169,7 @@ You'll help the user perform a comprehensive audit of their automations by:
         {"role": "user", "content": user_message}
     ]
 
-@mcp.prompt()
+@gated_prompt()
 def entity_naming_consistency():
     """
     Audit entity names and suggest standardization improvements
@@ -1161,7 +1197,7 @@ You'll help the user audit and improve their entity naming by:
         {"role": "user", "content": user_message}
     ]
 
-@mcp.prompt()
+@gated_prompt()
 def dashboard_layout_generator():
     """
     Create optimized dashboards based on user preferences and usage patterns
@@ -1191,7 +1227,7 @@ You'll help the user create optimized dashboards by:
     ]
 
 # Documentation endpoint
-@mcp.tool()
+@gated_tool("history")
 @async_handler("get_history")
 async def get_history(entity_id: str, hours: int = 24) -> Dict[str, Any]:
     """
@@ -1305,7 +1341,7 @@ def _flatten_history(history_data: Any, entity_id: str) -> Dict[str, Any]:
     }
 
 
-@mcp.tool()
+@gated_tool("history")
 @async_handler("get_history_range")
 async def get_history_range(
     entity_id: str,
@@ -1347,7 +1383,7 @@ async def get_history_range(
     return _flatten_history(history_data, entity_id)
 
 
-@mcp.tool()
+@gated_tool("history")
 @async_handler("get_statistics")
 async def get_statistics(
     entity_id: str,
@@ -1389,7 +1425,7 @@ async def get_statistics(
         return {"entity_id": entity_id, "error": str(e), "statistics": []}
 
 
-@mcp.tool()
+@gated_tool("history")
 @async_handler("get_statistics_range")
 async def get_statistics_range(
     entity_id: str,
@@ -1431,7 +1467,7 @@ async def get_statistics_range(
         return {"entity_id": entity_id, "error": str(e), "statistics": []}
 
 
-@mcp.tool()
+@gated_tool("diagnostics")
 @async_handler("get_error_log")
 async def get_error_log(
     level: Optional[str] = None,
