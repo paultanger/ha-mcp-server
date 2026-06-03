@@ -221,9 +221,9 @@ docker run --rm \
 ## Read-only policy and entity allowlist
 
 This fork is read-only by default and uses its own entity allowlist, independent
-of Home Assistant's Assist exposure settings. Control tools and prompts remain
-in the code, but are not registered unless explicitly enabled.
+of Home Assistant's Assist exposure settings.
 
+Control tools and prompts remain in the code, but are not registered unless explicitly enabled (HASS_MCP_ENABLE_CONTROL / HASS_MCP_ENABLE_PROMPTS).
 Capability groups are controlled with environment variables:
 
 ```bash
