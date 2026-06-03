@@ -223,8 +223,7 @@ docker run --rm \
 This fork is read-only by default and uses its own entity allowlist, independent
 of Home Assistant's Assist exposure settings.
 
-Control tools and prompts remain in the code, but are not registered unless explicitly enabled (HASS_MCP_ENABLE_CONTROL / HASS_MCP_ENABLE_PROMPTS).
-Capability groups are controlled with environment variables:
+Control tools and prompts remain in the code, but are not registered unless explicitly enabled (HASS_MCP_ENABLE_CONTROL / HASS_MCP_ENABLE_PROMPTS). When disabled, they will not appear in MCP discovery (list_tools / list_prompts), and related examples below require enabling the corresponding capability.
 
 ```bash
 HASS_MCP_ENABLE_READ=true
