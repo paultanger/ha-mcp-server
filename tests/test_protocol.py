@@ -146,36 +146,48 @@ async def test_call_service_tool_via_protocol():
     import os
     import sys
 
-    # Enable control capability and reload modules so the tool registers.
-    os.environ["HASS_MCP_ENABLE_CONTROL"] = "true"
+    original_control = os.environ.get("HASS_MCP_ENABLE_CONTROL")
+    try:
+        # Enable control capability and reload modules so the tool registers.
+        os.environ["HASS_MCP_ENABLE_CONTROL"] = "true"
 
-    # Reload policy first so its CAPABILITIES dict picks up the new env var.
-    if "app.policy" in sys.modules:
-        importlib.reload(sys.modules["app.policy"])
+        # Reload policy first so its CAPABILITIES dict picks up the new env var.
+        if "app.policy" in sys.modules:
+            importlib.reload(sys.modules["app.policy"])
 
-    # Reload server — @gated_tool("control") now evaluates True and registers
-    # call_service_tool on the NEW mcp/_mcp_server instance.
-    if "app.server" in sys.modules:
-        importlib.reload(sys.modules["app.server"])
+        # Reload server — @gated_tool("control") now evaluates True and registers
+        # call_service_tool on the NEW mcp/_mcp_server instance.
+        if "app.server" in sys.modules:
+            importlib.reload(sys.modules["app.server"])
 
-    # Import the RELOADED mcp instance (not the one captured at top of file).
-    from app.server import mcp as reloaded_mcp
+        # Import the RELOADED mcp instance (not the one captured at top of file).
+        from app.server import mcp as reloaded_mcp
 
-    # Patch where the function is used (imported into app.server namespace).
-    patched_call = AsyncMock(return_value=[])
-    with patch("app.server.call_service", patched_call):
-        # Mock the HA service call HTTP request so it doesn't reach a real server.
-        respx.post("http://localhost:8123/api/services/automation/reload").mock(
-            return_value=httpx.Response(200, json={})
-        )
-
-        # Pass the reloaded FastMCP instance — SDK extracts its _mcp_server.
-        async with create_connected_server_and_client_session(
-            reloaded_mcp, raise_exceptions=True
-        ) as client:
-            result = await client.call_tool(
-                "call_service_tool", arguments={"domain": "automation", "service": "reload"}
+        # Patch where the function is used (imported into app.server namespace).
+        patched_call = AsyncMock(return_value=[])
+        with patch("app.server.call_service", patched_call):
+            # Mock the HA service call HTTP request so it doesn't reach a real server.
+            respx.post("http://localhost:8123/api/services/automation/reload").mock(
+                return_value=httpx.Response(200, json={})
             )
+
+            # Pass the reloaded FastMCP instance — SDK extracts its _mcp_server.
+            async with create_connected_server_and_client_session(
+                reloaded_mcp, raise_exceptions=True
+            ) as client:
+                result = await client.call_tool(
+                    "call_service_tool", arguments={"domain": "automation", "service": "reload"}
+                )
+    finally:
+        if original_control is None:
+            os.environ.pop("HASS_MCP_ENABLE_CONTROL", None)
+        else:
+            os.environ["HASS_MCP_ENABLE_CONTROL"] = original_control
+
+        if "app.policy" in sys.modules:
+            importlib.reload(sys.modules["app.policy"])
+        if "app.server" in sys.modules:
+            importlib.reload(sys.modules["app.server"])
 
     assert not result.isError
     patched_call.assert_called_once()
