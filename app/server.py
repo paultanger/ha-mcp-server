@@ -189,7 +189,7 @@ async def get_entity_resource(entity_id: str) -> str:
     """
     logger.info(f"Getting entity resource: {entity_id}")
     
-    # Get the entity state with caching (using lean format for token efficiency)
+    # Get the entity state
     state = await get_entity_state(entity_id, lean=True)
     
     # Check if there was an error
@@ -719,7 +719,8 @@ async def domain_summary_tool(domain: str, example_limit: int = 3) -> Dict[str, 
         domain="light" - get light summary
         domain="climate", example_limit=5 - climate summary with more examples
     Best Practices:
-        - Use this before retrieving all entities in a domain to understand what's available    """
+        - Use this before retrieving all entities in a domain to understand what's available
+    """
     logger.info(f"Getting domain summary for: {domain}")
     return await summarize_domain(domain, example_limit)
 

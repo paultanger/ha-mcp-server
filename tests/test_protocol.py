@@ -13,6 +13,7 @@ runs inside an anyio task group, which conflicts with pytest-asyncio's task
 boundary across fixture setup and test body.
 """
 
+import importlib
 from typing import Any, Dict
 from unittest.mock import AsyncMock, patch
 
@@ -131,13 +132,54 @@ async def test_all_prompts_use_valid_roles():
         assert not bad, "Invalid prompt roles: " + "; ".join(bad)
 
 
-async def test_call_service_tool_returns_dict_for_empty_list():
-    """The disabled-by-default control function still returns a dict when called directly."""
-    import app.server as server
+@respx.mock
+async def test_call_service_tool_via_protocol():
+    """The control tool is registered via MCP when the control capability is
+    enabled, and returns a dict with success status and affected_entities.
 
-    with patch("app.server.call_service", AsyncMock(return_value=[])):
-        payload = await server.call_service_tool("automation", "reload")
+    This test enables the control capability, reloads the server module so
+    the tool gets registered with FastMCP, then invokes it via
+    ``client.call_tool`` to cover tool registration + serialization + SDK
+    output validation in one pass.
+    """
+    import json
+    import os
+    import sys
 
+    # Enable control capability and reload modules so the tool registers.
+    os.environ["HASS_MCP_ENABLE_CONTROL"] = "true"
+
+    # Reload policy first so its CAPABILITIES dict picks up the new env var.
+    if "app.policy" in sys.modules:
+        importlib.reload(sys.modules["app.policy"])
+
+    # Reload server — @gated_tool("control") now evaluates True and registers
+    # call_service_tool on the NEW mcp/_mcp_server instance.
+    if "app.server" in sys.modules:
+        importlib.reload(sys.modules["app.server"])
+
+    # Import the RELOADED mcp instance (not the one captured at top of file).
+    from app.server import mcp as reloaded_mcp
+
+    # Patch where the function is used (imported into app.server namespace).
+    patched_call = AsyncMock(return_value=[])
+    with patch("app.server.call_service", patched_call):
+        # Mock the HA service call HTTP request so it doesn't reach a real server.
+        respx.post("http://localhost:8123/api/services/automation/reload").mock(
+            return_value=httpx.Response(200, json={})
+        )
+
+        # Pass the reloaded FastMCP instance — SDK extracts its _mcp_server.
+        async with create_connected_server_and_client_session(
+            reloaded_mcp, raise_exceptions=True
+        ) as client:
+            result = await client.call_tool(
+                "call_service_tool", arguments={"domain": "automation", "service": "reload"}
+            )
+
+    assert not result.isError
+    patched_call.assert_called_once()
+    payload = json.loads(result.content[0].text)
     assert isinstance(payload, dict)
     assert payload["success"] is True
     assert payload["affected_entities"] == []
