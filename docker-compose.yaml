@@ -1,4 +1,6 @@
 # docker-compose.yml — in your patched hass-mcp fork dir
+# restart:
+# docker compose up -d --force-recreate
 services:
   ha-mcp:
     build: .                      # builds YOUR fork, not voska/hass-mcp:latest
@@ -11,8 +13,11 @@ services:
     env_file:
       - .env                      # keep HA_TOKEN here, gitignored
     environment:
-      - HASS_MCP_ALLOWLIST=sensor.gpu_*,sensor.*_temperature,binary_sensor.*_offline
+      - HASS_MCP_ALLOWLIST_FILE=/data/allowlist.txt
       # read-only defaults are implicit; listed here for clarity:
+      - HASS_MCP_ENABLE_DIAGNOSTICS=false
       - HASS_MCP_ENABLE_CONTROL=false
       - HASS_MCP_ENABLE_PROMPTS=false
       - TZ=America/Denver
+    volumes:
+      - ./allowlist.txt:/data/allowlist.txt:ro
