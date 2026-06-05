@@ -245,6 +245,34 @@ HASS_MCP_ALLOWLIST_FILE=/path/to/allowlist.txt
 
 The allowlist file accepts one pattern per line and supports `#` comments.
 
+### Control denylist
+
+The control denylist provides a permanent safety floor: entities listed here can
+NEVER be controlled, even when `HASS_MCP_ENABLE_CONTROL=true` and the entity
+passes the allowlist. This is useful for critical devices like locks, garage
+doors, or gas valves that should remain read-only from the MCP layer.
+
+The denylist is **fail-open**: an empty denylist adds no extra denial — control
+is governed solely by capability flags and the allowlist. Read paths are
+completely unaffected.
+
+```bash
+HASS_MCP_CONTROL_DENYLIST=lock.front_door,lock.back_door,garage_door.*
+HASS_MCP_CONTROL_DENYLIST_FILE=/path/to/denylist.txt
+```
+
+The denylist file accepts one pattern per line and supports `#` comments. Both
+inline (`HASS_MCP_CONTROL_DENYLIST`) and file-based (`HASS_MCP_CONTROL_DENYLIST_FILE`)
+sources are merged; an entity matching any pattern is permanently blocked from
+control actions (`entity_action`, `call_service_tool`).
+
+> **Note**: The denylist is loaded once at startup. After editing
+> `HASS_MCP_CONTROL_DENYLIST_FILE`, restart the container for changes to take
+> effect:
+> ```bash
+> docker compose restart ha-mcp
+> ```
+
 ## Usage Examples
 
 Here are some examples of prompts you can use with Claude once Hass-MCP is set up:

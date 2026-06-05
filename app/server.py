@@ -163,6 +163,11 @@ async def entity_action(entity_id: str, action: str, params: Optional[Dict[str, 
     if not policy.is_allowed(entity_id):
         return policy.denied(entity_id)
 
+    # Control denylist enforcement (Hermes fork): permanently block actuation
+    # of critical entities regardless of capability flags or allowlist.
+    if policy.control_denied(entity_id):
+        return policy.control_denied_payload(entity_id)
+
     # Map action to service name
     service = action if action == "toggle" else f"turn_{action}"
     
@@ -1018,6 +1023,11 @@ async def call_service_tool(domain: str, service: str, data: Optional[Dict[str, 
     for entity_id in entity_ids:
         if not policy.is_allowed(entity_id):
             return {**policy.denied(entity_id), "success": False, "affected_entities": []}
+
+    # Enforce control denylist on explicit entity targets.
+    for entity_id in entity_ids:
+        if policy.control_denied(entity_id):
+            return {**policy.control_denied_payload(entity_id), "success": False, "affected_entities": []}
 
     logger.info(f"Calling Home Assistant service: {domain}.{service} with data: {payload}")
     affected_entities = await call_service(domain, service, payload)

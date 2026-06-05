@@ -18,12 +18,18 @@ PROMPTS = {
 }
 
 
-def _reload_policy(monkeypatch, allowlist=None, **flags):
+def _reload_policy(monkeypatch, allowlist=None, denylist=None, **flags):
     if allowlist is None:
         monkeypatch.delenv("HASS_MCP_ALLOWLIST", raising=False)
     else:
         monkeypatch.setenv("HASS_MCP_ALLOWLIST", allowlist)
     monkeypatch.delenv("HASS_MCP_ALLOWLIST_FILE", raising=False)
+
+    if denylist is None:
+        monkeypatch.delenv("HASS_MCP_CONTROL_DENYLIST", raising=False)
+    else:
+        monkeypatch.setenv("HASS_MCP_CONTROL_DENYLIST", denylist)
+    monkeypatch.delenv("HASS_MCP_CONTROL_DENYLIST_FILE", raising=False)
 
     for cap in ("READ", "HISTORY", "DIAGNOSTICS", "RESOURCES", "CONTROL", "PROMPTS"):
         name = f"HASS_MCP_ENABLE_{cap}"
@@ -45,6 +51,7 @@ def anyio_backend():
 def restore_default_policy():
     yield
     os.environ["HASS_MCP_ALLOWLIST"] = "*"
+    os.environ.pop("HASS_MCP_CONTROL_DENYLIST", None)
     for cap in ("READ", "HISTORY", "DIAGNOSTICS", "RESOURCES", "CONTROL", "PROMPTS"):
         os.environ.pop(f"HASS_MCP_ENABLE_{cap}", None)
     import app.policy as policy
@@ -182,3 +189,174 @@ async def test_get_system_overview_filters_raw_state_fetch(monkeypatch):
     assert set(overview["domains"]) == {"sensor"}
     assert overview["domain_samples"]["sensor"][0]["entity_id"] == "sensor.allowed"
     assert "light" not in overview["domains"]
+
+
+def test_denylist_exact_and_glob_matching(monkeypatch):
+    policy = _reload_policy(
+        monkeypatch,
+        allowlist="*",
+        denylist="lock.front_door,lock.*,sensor.danger_*",
+    )
+
+    assert policy.control_denied("lock.front_door") is True
+    assert policy.control_denied("lock.back_door") is True
+    assert policy.control_denied("sensor.danger_gas") is True
+    assert policy.control_denied("lock.garage") is True
+    # Non-matching entities are not denied
+    assert policy.control_denied("light.living_room") is False
+    assert policy.control_denied("sensor.temperature") is False
+
+
+def test_empty_denylist_is_fail_open(monkeypatch):
+    policy = _reload_policy(monkeypatch, allowlist="*", denylist=None)
+
+    assert policy.DENYLIST == []
+    assert policy.control_denied("lock.front_door") is False
+    assert policy.control_denied("any.entity") is False
+
+
+def test_denylist_empty_string_is_fail_open(monkeypatch):
+    policy = _reload_policy(monkeypatch, allowlist="*", denylist="")
+
+    assert policy.DENYLIST == []
+    assert policy.control_denied("lock.front_door") is False
+
+
+def test_denylist_does_not_affect_read(monkeypatch):
+    policy = _reload_policy(
+        monkeypatch,
+        allowlist="*",
+        denylist="lock.front_door",
+    )
+
+    # is_allowed should be unaffected by the denylist
+    assert policy.is_allowed("lock.front_door") is True
+    assert policy.is_allowed("light.kitchen") is True
+
+
+def test_control_denied_payload_structure(monkeypatch):
+    policy = _reload_policy(monkeypatch, allowlist="*", denylist="lock.front_door")
+
+    payload = policy.control_denied_payload("lock.front_door")
+    assert "entity_id" in payload
+    assert payload["entity_id"] == "lock.front_door"
+    assert "error" in payload
+    assert "control denylist" in payload["error"]
+
+
+def test_denylist_file_loading(monkeypatch, tmp_path):
+    denyfile = tmp_path / "denylist.txt"
+    denyfile.write_text("lock.front_door\n# comment\nlight.garage\n")
+
+    policy = _reload_policy(
+        monkeypatch,
+        allowlist="*",
+        denylist=None,
+    )
+    # Set the file env var after reload to test file loading
+    monkeypatch.setenv("HASS_MCP_CONTROL_DENYLIST_FILE", str(denyfile))
+    policy = importlib.reload(policy)
+
+    assert "lock.front_door" in policy.DENYLIST
+    assert "light.garage" in policy.DENYLIST
+    assert policy.control_denied("lock.front_door") is True
+    assert policy.control_denied("light.garage") is True
+
+
+@pytest.mark.asyncio
+async def test_denylist_blocks_control_but_allows_read(monkeypatch):
+    _reload_policy(
+        monkeypatch,
+        allowlist="*",
+        denylist="lock.deny_me",
+    )
+    import app.hass as hass
+
+    get_client = AsyncMock()
+    monkeypatch.setattr(hass, "get_client", get_client)
+
+    # The denylist only affects control paths, not data access
+    get_client.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_denylist_blocks_entity_action(monkeypatch):
+    _reload_policy(
+        monkeypatch,
+        allowlist="*",
+        denylist="lock.deny_action",
+    )
+    import app.server as server
+
+    result = await server.entity_action("lock.deny_action", "on")
+    assert "error" in result
+    assert "control denylist" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_denylist_blocks_call_service_tool(monkeypatch):
+    _reload_policy(
+        monkeypatch,
+        allowlist="*",
+        denylist="lock.deny_service",
+    )
+    import app.server as server
+
+    result = await server.call_service_tool(
+        domain="lock",
+        service="unlock",
+        data={"entity_id": "lock.deny_service"},
+    )
+    assert result["success"] is False
+    assert "error" in result
+    assert "control denylist" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_denylist_allows_non_denied_entities(monkeypatch):
+    from unittest.mock import patch
+
+    _reload_policy(
+        monkeypatch,
+        allowlist="*",
+        denylist="lock.deny_me",
+    )
+    import app.server as server
+
+    # Non-denylisted entity should pass through to HA (mocked)
+    with patch("app.server.call_service", return_value=[]):
+        result = await server.entity_action("lock.allowed", "on")
+        # Should not contain denylist error
+        assert "control denylist" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_denylist_with_glob_pattern(monkeypatch):
+    from unittest.mock import patch
+
+    _reload_policy(
+        monkeypatch,
+        allowlist="*",
+        denylist="lock.*_door",
+    )
+    import app.server as server
+
+    result = await server.entity_action("lock.front_door", "on")
+    assert "error" in result
+    assert "control denylist" in result["error"]
+
+    # Non-matching entity should pass through
+    with patch("app.server.call_service", return_value=[]):
+        result = await server.entity_action("lock.keypad", "on")
+        assert "control denylist" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_denylist_empty_entity_id(monkeypatch):
+    policy = _reload_policy(
+        monkeypatch,
+        allowlist="*",
+        denylist="lock.*",
+    )
+
+    assert policy.control_denied("") is False

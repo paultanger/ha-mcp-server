@@ -18,5 +18,6 @@ Thumbs.db
 # Testing
 .pytest_cache/
 
-# personal allowlist
+# personal lists
 allowlist.txt
+denylist.txt

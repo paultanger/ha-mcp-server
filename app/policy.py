@@ -1,8 +1,8 @@
 """
 Read-only / capability policy layer for the Hermes fork of hass-mcp.
 
-Two independent controls, both env-driven so nothing is hard-coded and any
-capability can be re-enabled later WITHOUT editing code:
+Three independent controls, all env-driven so nothing is hard-coded and any
+setting can be changed later WITHOUT editing code:
 
 1. CAPABILITY FLAGS — which groups of tools/resources/prompts get registered
    at startup. Control is OFF by default; this fork is read-only out of the box.
@@ -12,6 +12,11 @@ capability can be re-enabled later WITHOUT editing code:
    centrally in app/hass.py at the data-access choke points. Independent of
    Home Assistant's Assist exposure list (the whole reason this fork exists).
    FAIL-CLOSED: an empty allowlist denies everything, with a loud startup warning.
+
+3. CONTROL DENYLIST — entities that can NEVER be controlled, even when
+   HASS_MCP_ENABLE_CONTROL=true and the entity passes the allowlist. Acts as a
+   permanent safety floor for critical devices (locks, garage doors, etc.).
+   FAIL-OPEN: an empty denylist adds no extra denial. Read paths are unaffected.
 """
 
 from __future__ import annotations
@@ -99,6 +104,38 @@ def filter_entities(entities: Any) -> Any:
     ]
 
 
+# --- Control denylist --------------------------------------------------------
+def _load_deny_patterns() -> list[str]:
+    patterns: list[str] = []
+    raw = os.environ.get("HASS_MCP_CONTROL_DENYLIST", "")
+    patterns += [p.strip() for p in raw.split(",") if p.strip()]
+    path = os.environ.get("HASS_MCP_CONTROL_DENYLIST_FILE", "").strip()
+    if path:
+        try:
+            for line in Path(path).read_text().splitlines():
+                line = line.split("#", 1)[0].strip()
+                if line:
+                    patterns.append(line)
+        except OSError as e:
+            logger.error("Could not read HASS_MCP_CONTROL_DENYLIST_FILE %s: %s", path, e)
+    return patterns
+
+
+DENYLIST: list[str] = _load_deny_patterns()
+
+
+def control_denied(entity_id: str) -> bool:
+    """True if entity_id is permanently blocked from control actions.
+
+    Patterns are exact ids or fnmatch globs (same syntax as the allowlist).
+    An empty denylist denies nothing — control is governed solely by capability
+    flags and the allowlist.
+    """
+    if not entity_id:
+        return False
+    return any(fnmatch.fnmatchcase(entity_id, pat) for pat in DENYLIST)
+
+
 def denied(entity_id: str) -> dict:
     """Standard deny payload for single-entity reads/actions."""
     return {
@@ -106,6 +143,18 @@ def denied(entity_id: str) -> dict:
         "error": (
             f"Entity '{entity_id}' is not in the MCP allowlist "
             f"(HASS_MCP_ALLOWLIST / HASS_MCP_ALLOWLIST_FILE). Access denied."
+        ),
+    }
+
+
+def control_denied_payload(entity_id: str) -> dict:
+    """Standard deny payload for control actions blocked by the denylist."""
+    return {
+        "entity_id": entity_id,
+        "error": (
+            f"Entity '{entity_id}' is in the MCP control denylist "
+            f"(HASS_MCP_CONTROL_DENYLIST / HASS_MCP_CONTROL_DENYLIST_FILE). "
+            f"Control is permanently blocked."
         ),
     }
 
@@ -122,3 +171,8 @@ def log_startup_summary() -> None:
     else:
         logger.info("hass-mcp policy: %d allowlist pattern(s)=%s",
                     len(ALLOWLIST), ALLOWLIST)
+    if DENYLIST:
+        logger.info("hass-mcp policy: %d control denylist pattern(s)=%s",
+                    len(DENYLIST), DENYLIST)
+    else:
+        logger.info("hass-mcp policy: control denylist is empty (fail-open)")

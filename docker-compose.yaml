@@ -14,6 +14,7 @@ services:
       - .env                      # keep HA_TOKEN here, gitignored
     environment:
       - HASS_MCP_ALLOWLIST_FILE=/data/allowlist.txt
+      # - HASS_MCP_CONTROL_DENYLIST_FILE=/data/denylist.txt
       # read-only defaults are implicit; listed here for clarity:
       - HASS_MCP_ENABLE_DIAGNOSTICS=false
       - HASS_MCP_ENABLE_CONTROL=false
@@ -21,3 +22,4 @@ services:
       - TZ=America/Denver
     volumes:
       - ./allowlist.txt:/data/allowlist.txt:ro
+      # - ./denylist.txt:/data/denylist.txt:ro
