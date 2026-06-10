@@ -4,13 +4,10 @@ import functools
 import inspect
 import logging
 import os
-import ssl
 from datetime import datetime, timedelta, timezone
 
-import truststore
-
 from app.areas import get_area, get_all_areas
-from app.config import HA_URL, HA_TOKEN, get_ha_headers
+from app.config import HA_URL, HA_TOKEN, get_ha_headers, _build_ssl_context
 from app import policy  # Hermes fork: capability flags + entity allowlist
 
 # Set up logging
@@ -91,31 +88,6 @@ def handle_api_errors(func: F) -> F:
             return format_error(f"Unexpected error: {str(e)}")
     
     return cast(F, wrapper)
-
-def _build_ssl_context() -> ssl.SSLContext:
-    """Build the TLS verification context.
-
-    Layered so users running an in-house CA (e.g. step-ca, smallstep) can
-    connect to a properly-signed HA instance on any platform / deployment
-    mode without weakening verification:
-
-    1. If `SSL_CERT_FILE` is set, use it. This is the OpenSSL standard env
-       var, honored by every modern tool. It's the primary mechanism for
-       Docker (bind-mount the CA, set the env var) and explicit overrides.
-    2. Otherwise use truststore, which bridges to the OS-native trust store
-       (macOS Keychain, Windows Cert Store, Linux ca-certificates). Users
-       who installed their CA at the OS level get it for free.
-
-    No REQUESTS_CA_BUNDLE shim — that's a requests-ism, not a standard.
-    No verify=False fallback — silent downgrade is worse than a hard failure.
-    """
-    cert_file = os.environ.get("SSL_CERT_FILE")
-    if cert_file:
-        logger.debug("TLS: using SSL_CERT_FILE=%s", cert_file)
-        return ssl.create_default_context(cafile=cert_file)
-    logger.debug("TLS: using OS native trust store via truststore")
-    return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-
 
 # Persistent HTTP client
 async def get_client() -> httpx.AsyncClient:

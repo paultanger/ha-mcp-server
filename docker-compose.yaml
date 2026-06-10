@@ -1,6 +1,8 @@
 # docker-compose.yml — in your patched hass-mcp fork dir
 # restart:
 # docker compose up -d --force-recreate
+# check logs
+# docker compose logs -f ha-mcp
 services:
   ha-mcp:
     build: .                      # builds YOUR fork, not voska/hass-mcp:latest

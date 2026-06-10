@@ -17,8 +17,7 @@ import logging
 
 import websockets
 
-from app.config import HA_URL, HA_TOKEN
-from app.hass import _build_ssl_context
+from app.config import HA_URL, HA_TOKEN, _build_ssl_context
 
 logger = logging.getLogger(__name__)
 
