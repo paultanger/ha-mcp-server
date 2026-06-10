@@ -2,15 +2,19 @@
 Per-entity area enrichment for Home Assistant.
 
 Home Assistant's REST `/api/states` endpoint does not include area data;
-area information lives in HA's area registry which is only directly
-exposed over WebSocket. To stay REST-only and keep the existing httpx
-client + long-lived token contract, this module uses HA's `/api/template`
-endpoint to render a single Jinja that emits `entity_id<US>area_name`
-for every entity. Server-side, `area_name(entity_id)` walks the
-entity → device → area chain automatically (matches HA's own behavior).
+area information lives in HA's registries (area / entity / device), exposed
+over the WebSocket API. We build the entity→area map from three registry list
+calls — `config/area_registry/list`, `config/entity_registry/list`, and
+`config/device_registry/list` — and resolve each entity to its area the same
+way HA does: the entity's own `area_id` if set, otherwise its device's area.
 
-The mapping is cached in memory with a short TTL (the area registry
-rarely changes; users tolerate a few minutes of staleness).
+This deliberately avoids HA's `/api/template` endpoint, which is **admin-only**
+and returns 401 for the non-admin read-only token this server is designed to
+use (see the HA runbook §3/§6). The registry list calls work with a non-admin
+token, so area enrichment functions without granting admin.
+
+The mapping is cached in memory with a short TTL (the registries rarely change;
+users tolerate a few minutes of staleness).
 """
 
 import asyncio
@@ -20,37 +24,20 @@ from typing import Dict, Optional
 
 import httpx
 
-from app.config import HA_URL, get_ha_headers
+from app.ws import call_ws
 
 logger = logging.getLogger(__name__)
 
-# Default cache duration. Area registry changes very rarely (a user
-# adding/renaming a room), so this can be aggressive.
+# Default cache duration. Registries change very rarely (a user adding/renaming
+# a room or moving a device), so this can be aggressive.
 _DEFAULT_TTL_SECONDS = 300
-
-# ASCII unit separator — used to delimit entity_id from area name in the
-# template output. Won't appear in entity IDs (they're [a-z0-9_.] only) or
-# in any sensible area name.
-_US = "\x1f"
-
-# Single Jinja that emits one line per entity. We embed the entity loop
-# in the template so HA does the work server-side; one REST call returns
-# the entire entity→area map regardless of how many entities are defined.
-_AREA_TEMPLATE = (
-    "{%- set ns = namespace(items=[]) -%}\n"
-    "{%- for s in states -%}\n"
-    "  {%- set a = area_name(s.entity_id) -%}\n"
-    f"  {{%- set ns.items = ns.items + [(s.entity_id ~ '{_US}' ~ (a or ''))] -%}}\n"
-    "{%- endfor -%}\n"
-    "{{ ns.items | join('\\n') }}\n"
-)
 
 
 class AreaCache:
     """In-memory TTL cache of {entity_id: area_name | None}.
 
     Single-flight: concurrent get/all calls during a refresh share one
-    HTTP request rather than stampeding the HA API.
+    request rather than stampeding the HA API.
     """
 
     def __init__(self, ttl_seconds: int = _DEFAULT_TTL_SECONDS):
@@ -68,7 +55,7 @@ class AreaCache:
             # refreshed while we were waiting.
             if time.monotonic() < self._expires_at:
                 return self._cache
-            await self._refresh(client)
+            await self._refresh()
         return self._cache
 
     async def get(self, client: httpx.AsyncClient, entity_id: str) -> Optional[str]:
@@ -82,16 +69,16 @@ class AreaCache:
         self._cache = {}
         self._expires_at = 0.0
 
-    async def _refresh(self, client: httpx.AsyncClient) -> None:
-        """Re-fetch the area map via /api/template."""
+    async def _refresh(self) -> None:
+        """Rebuild the entity→area map from HA's WS registries.
+
+        Resolution matches HA's own `area_name()`: an entity's explicit
+        `area_id` wins; otherwise it inherits its device's area.
+        """
         try:
-            response = await client.post(
-                f"{HA_URL}/api/template",
-                headers=get_ha_headers(),
-                json={"template": _AREA_TEMPLATE},
-                timeout=30,
-            )
-            response.raise_for_status()
+            areas = await call_ws("config/area_registry/list")
+            entities = await call_ws("config/entity_registry/list")
+            devices = await call_ws("config/device_registry/list")
         except Exception as e:
             # Don't crash callers; serve stale cache and back off retry for
             # a minute to avoid hammering a flaky HA.
@@ -99,17 +86,21 @@ class AreaCache:
             self._expires_at = time.monotonic() + 60
             return
 
+        area_names: Dict[str, str] = {
+            a["area_id"]: a["name"] for a in areas if a.get("area_id")
+        }
+        device_area: Dict[str, Optional[str]] = {
+            d["id"]: d.get("area_id") for d in devices if d.get("id")
+        }
+
         cache: Dict[str, Optional[str]] = {}
-        for line in response.text.splitlines():
-            # Defensive: skip blank lines and entries the template produced
-            # without our separator.
-            if _US not in line:
-                continue
-            entity_id, area = line.split(_US, 1)
-            entity_id = entity_id.strip()
+        for ent in entities:
+            entity_id = ent.get("entity_id")
             if not entity_id:
                 continue
-            cache[entity_id] = area.strip() or None
+            # Entity's own area wins; else fall back to its device's area.
+            area_id = ent.get("area_id") or device_area.get(ent.get("device_id"))
+            cache[entity_id] = area_names.get(area_id) if area_id else None
 
         self._cache = cache
         self._expires_at = time.monotonic() + self._ttl
