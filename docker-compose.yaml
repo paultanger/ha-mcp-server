@@ -25,3 +25,10 @@ services:
     volumes:
       - ./allowlist.txt:/data/allowlist.txt:ro
       # - ./denylist.txt:/data/denylist.txt:ro
+      - ./scripts:/app/scripts:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(5); s.connect(('localhost',8000)); s.close()"]
+      interval: 2m
+      timeout: 10s
+      start_period: 30s
+      retries: 3

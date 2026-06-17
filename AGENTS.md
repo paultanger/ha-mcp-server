@@ -88,6 +88,32 @@ Preserve the existing style unless a lint/format tool is added deliberately.
 - Avoid dependency bumps or published image/version changes unless requested.
   This is a fork; keep changes small and easy to compare with upstream.
 
+## Smoke testing (required after code changes)
+
+After editing anything under `app/`, run the smoke tests and confirm they exit 0
+before considering the change done:
+
+    ./run_smoke_tests.sh
+
+This runs Tier 0 (import every `app.*` module + config check, no network) then
+Tier 1 (MCP `tools/list` round-trip against the running container — validates
+HTTP transport, tool registration, and the `HASS_MCP_ENABLE_CONTROL=false` policy
+gate). It does NOT call Home Assistant or cause any side effects.
+
+A passing smoke test does not redeploy the running container. The long-running
+process keeps the code it imported at startup. To actually apply the change:
+
+    docker compose up -d --force-recreate ha-mcp
+
+Source is baked into the image (not bind-mounted), so a rebuild is needed to
+pick up `app/` changes:
+
+    docker compose up -d --build ha-mcp
+
+There are no Tier 2 (side-effecting) scripts — the service is read-only by default.
+If `HASS_MCP_ENABLE_CONTROL=true` is ever enabled, manually verify control paths
+against a test HA instance; do not automate real entity actions.
+
 ## Coding Conventions
 - Prefer typed async helpers and return JSON-serializable `dict`/`list` shapes
   from MCP tools.
